@@ -1,0 +1,126 @@
+#version 450
+
+layout( local_size_x = 1024 ) in;
+layout( binding = 1, r32f ) uniform restrict readonly image2D inDensity;
+layout( binding = 2, rg32f ) uniform restrict readonly image2D inColumns;
+layout( binding = 3, r32f ) uniform restrict readonly image2D inIntegral;
+layout( binding = 4, rg32f ) uniform restrict readonly image2D inDiagonalDown;
+layout( binding = 5, rg32f ) uniform restrict readonly image2D inDiagonalUp;
+layout( binding = 6, rg32f ) uniform restrict writeonly image2D outMapping;
+
+shared float top, total;
+
+void weightsDensity( ivec2 texel, out vec4 weights, out vec4 tiltedWeights )
+{
+	float density		= imageLoad( inDensity, texel ).x;
+	vec2 columns		= imageLoad( inColumns, texel ).xy;
+	float integral		= imageLoad( inIntegral, texel ).x;
+	vec2 diagonalDown	= imageLoad( inDiagonalDown, texel ).xy;
+	vec2 diagonalUp		= imageLoad( inDiagonalUp, texel ).xy;
+
+	float alpha		= integral;
+	float left		= imageLoad( inIntegral, ivec2( texel.x, 1023 ) ).x;
+	float right		= total - left;
+
+	float beta	= left - alpha;
+	float delta = top - alpha;
+	float gamma	= total - left - delta;
+
+	float alphaT	= ( diagonalDown.x + diagonalUp.y ) - columns.x;
+	float gammaT	= ( diagonalDown.y + diagonalUp.x ) - columns.y - density;
+	float betaT		= left - ( diagonalDown.x + diagonalUp.x ) + density;
+	float deltaT	= right - ( diagonalUp.y + diagonalDown.y ) + columns.x + columns.y;
+
+	weights			= vec4( alpha, beta, gamma, delta ) / total;
+	tiltedWeights	= vec4( alphaT, betaT, gammaT, deltaT ) / total;
+}
+
+void weightsUniform( vec2 position, out vec4 weights, out vec4 tiltedWeights )
+{
+	float ix = 1.0 - position.x, iy = 1.0 - position.y;
+
+	float alpha = position.x * position.y;
+	float beta	= position.x * iy;
+	float gamma = ix * iy;
+	float delta = ix * position.y;
+
+	float alphaT, betaT, gammaT, deltaT;
+	if( position.x <= position.y ) {
+		if( position.x <= 1.0 - position.y ) {
+			betaT	= position.x * position.x;
+			alphaT	= position.x * position.y - ( betaT / 2.0 ) +  ( position.y * position.y / 2.0 );
+			gammaT	= position.x * iy - ( betaT / 2.0 ) + ( iy * iy / 2.0 );
+			deltaT	= 1.0 - alphaT - betaT - gammaT;
+
+		} else {
+			gammaT	= iy * iy;
+			betaT	= position.x * iy - ( gammaT / 2.0 ) + ( position.x * position.x / 2.0 );
+			deltaT	= ix * iy - ( gammaT / 2.0 ) + ( ix * ix / 2.0 );
+			alphaT	= 1.0 - betaT - gammaT - deltaT;
+
+		}
+	} else {
+		if( position.x <= 1.0 - position.y ) {
+			alphaT	= position.y * position.y;
+			betaT	= position.x * position.y - ( alphaT / 2.0 ) + ( position.x * position.x / 2.0 );
+			deltaT	= ix * position.y - ( alphaT / 2.0 ) + ( ix * ix / 2.0 );
+			gammaT	= 1.0 - alphaT - betaT - deltaT;
+
+		} else {
+			deltaT	= ix * ix;
+			alphaT	= ix * position.y - ( deltaT / 2.0 ) + ( position.y * position.y / 2.0 );
+			gammaT	= ix * iy - ( deltaT / 2.0 ) + ( iy * iy / 2.0 );
+			betaT	= 1.0 - alphaT - gammaT - deltaT;
+		}
+	}
+
+	weights			= vec4( alpha, beta, gamma, delta );
+	tiltedWeights	= vec4( alphaT, betaT, gammaT, deltaT );
+}
+
+void main()
+{
+	int group		= int( gl_WorkGroupID.x );
+	int invocation	= int( gl_LocalInvocationID.x );
+	ivec2 texel		= ivec2( invocation, group );
+
+	if( invocation == 0 ) {
+		top		= imageLoad( inIntegral, ivec2( 1023, texel.y ) ).x;
+		total	= imageLoad( inIntegral, ivec2( 1023, 1023 ) ).x;
+	}
+	barrier();
+
+	vec2 position = texel / vec2( 1023.0 );
+	vec2 q1, q2, q3, q4;
+	if( position.y < position.x ) {
+		q1 = vec2( 1.0, 1.0 + position.y - position.x );
+		q3 = vec2( position.x - position.y, 0.0 );
+	} else {
+		q1 = vec2( 1.0 - position.y + position.x, 1.0 );
+		q3 = vec2( 0.0, position.y - position.x );
+	}
+
+	if( position.x + position.y < 1.0 ) {
+		q2 = vec2( position.x + position.y, 0.0 );
+		q4 = vec2( 0.0, position.x + position.y );
+	} else {
+		q2 = vec2( 1.0, position.x + position.y - 1.0 );
+		q4 = vec2( position.x + position.y - 1.0, 1.0 );
+	}
+
+	vec4 weights, tiltedWeights;
+
+	weightsDensity( texel, weights, tiltedWeights );
+	vec2 densityNormal = vec2( weights.x * q1 + weights.y * q2 + weights.z * q3 + weights.w * q4 );
+	vec2 densityTilted = vec2( tiltedWeights.y + position.x * ( tiltedWeights.x + tiltedWeights.z ), tiltedWeights.x + position.y * ( tiltedWeights.y + tiltedWeights.w ) );
+
+	weightsUniform( position, weights, tiltedWeights );
+	vec2 uniformNormal = vec2( weights.x * q1 + weights.y * q2 + weights.z * q3 + weights.w * q4 );
+	vec2 uniformTilted = vec2( tiltedWeights.y + position.x * ( tiltedWeights.x + tiltedWeights.z ), tiltedWeights.x + position.y * ( tiltedWeights.y + tiltedWeights.w ) );
+	
+	vec2 densityMapping = ( densityNormal + densityTilted ) / 2.0;
+	vec2 uniformMapping = ( uniformNormal + uniformTilted ) / 2.0;
+	vec2 mapping = densityMapping - uniformMapping;
+
+	imageStore( outMapping, texel, vec4( mapping, 0.0, 0.0 ) );
+}

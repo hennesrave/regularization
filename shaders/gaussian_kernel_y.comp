@@ -1,0 +1,38 @@
+#version 450
+
+layout( local_size_x = 1024 ) in;
+layout( binding = 1, r32f ) uniform restrict image2D inoutDensity;
+layout( push_constant ) uniform PushConstants {
+	uint _pointCount;
+	uint kernelRadius;
+};
+
+shared float data[1024];
+
+void main()
+{
+	int x 		= int( gl_WorkGroupID.x );
+	int y 		= int( gl_LocalInvocationID.x );
+	data[y] 	= imageLoad( inoutDensity, ivec2( x, y ) ).x;
+	barrier();
+
+	const float pi 		= 3.14159265358979323846;
+	const float stddev 	= kernelRadius / 3.0;
+	float weight 		= 1.0 / sqrt( 2.0 * pi * stddev * stddev );
+	float result 		= weight * data[y];
+
+	for( int dy = 1; dy <= kernelRadius; ++dy ) {
+		weight = exp( -( dy * dy ) / ( 2.0 * stddev * stddev ) ) / sqrt( 2.0 * pi * stddev * stddev );
+
+		int index = y + dy;
+		if( index < 1024 )
+			result += weight * data[index];
+		
+		index = y - dy;
+		if( index >= 0 )
+			result += weight * data[index];
+	}
+
+	imageStore( inoutDensity, ivec2( x, y ), vec4( result ) );
+
+}

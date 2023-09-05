@@ -1,0 +1,45 @@
+#version 450
+
+layout( local_size_x = 1024 ) in;
+layout( binding = 0 ) coherent restrict buffer BufferPoints {
+	vec2 points[];
+};
+layout( binding = 6, rg32f ) uniform restrict readonly image2D inMapping;
+layout( push_constant ) uniform PushConstants {
+	uint pointCount;
+};
+
+vec2 getMapping( vec2 position )
+{
+	vec2 texel	= 0.5 + position * 1023.0;
+
+	int left	= int( floor( texel.x - 0.5 ) );
+	int top		= int( floor( texel.y - 0.5 ) );
+	
+	ivec2 topleft		= ivec2( left, top );
+	ivec2 topright		= ivec2( left + 1, top );
+	ivec2 bottomleft	= ivec2( left, top + 1 );
+	ivec2 bottomright	= ivec2( left + 1, top + 1 );
+	
+	vec2 topleftMapping		= imageLoad( inMapping, topleft ).xy;
+	vec2 toprightMapping	= imageLoad( inMapping, topright ).xy;
+	vec2 bottomleftMapping	= imageLoad( inMapping, bottomleft ).xy;
+	vec2 bottomrightMapping	= imageLoad( inMapping, bottomright ).xy;
+	
+	float weightx = texel.x - ( left + 0.5 );
+	float weighty = texel.y - ( top + 0.5 );
+	
+	vec2 topmapping		= mix( topleftMapping, toprightMapping, weightx );
+	vec2 bottommapping	= mix( bottomleftMapping, bottomrightMapping, weightx );
+	return mix( topmapping, bottommapping, weighty );
+}
+
+void main()
+{
+	uint index							= gl_GlobalInvocationID.x;
+	if( index >= pointCount ) return;
+
+	vec2 position						= ( points[index] + 1.0 ) / 2.0;
+	position							+= getMapping( position );
+	points[gl_GlobalInvocationID.x]		= position * 2.0 - 1.0;
+}

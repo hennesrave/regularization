@@ -1,0 +1,51 @@
+#version 450
+
+layout( local_size_x = 1024 ) in;
+layout( binding = 2, rg32f ) uniform restrict readonly image2D inColumns;
+layout( binding = 4, rg32f ) uniform restrict writeonly image2D outDiagonal;
+
+shared float topleft[1024];
+shared float bottomright[1024];
+
+void gather( int invocation, ivec2 position, int stride ) {
+	float topleftnext = topleft[invocation];
+	ivec2 pos = position + stride * ivec2( -1, -1 );
+	if( pos.x >= 0 && pos.y >= 0 ) topleftnext += topleft[invocation - stride];
+
+	float bottomrightnext = bottomright[invocation];
+	pos = position + stride * ivec2( 1, 1 );
+	if( pos.x < 1023 && pos.y < 1023 ) bottomrightnext += bottomright[invocation + stride];
+
+	barrier();
+	
+	topleft[invocation] = topleftnext;
+	bottomright[invocation] = bottomrightnext;
+
+	barrier();
+}
+
+void main()
+{
+	int group		= int( gl_WorkGroupID.x );
+	int invocation	= int( gl_LocalInvocationID.x );
+	ivec2 position	= ivec2( max( 0, group - 1023 ), max( 0, 1023 - group ) ) + invocation * ivec2( 1, 1 );
+	if( position.x >= 1024 || position.y >= 1024 ) return;
+
+	vec2 columns			= imageLoad( inColumns, position ).xy;
+	topleft[invocation]		= columns.x;
+	bottomright[invocation] = columns.y;
+	barrier();
+
+	gather( invocation, position, 1 );
+	gather( invocation, position, 2 );
+	gather( invocation, position, 4 );
+	gather( invocation, position, 8 );
+	gather( invocation, position, 16 );
+	gather( invocation, position, 32 );
+	gather( invocation, position, 64 );
+	gather( invocation, position, 128 );
+	gather( invocation, position, 256 );
+	gather( invocation, position, 512 );
+
+	imageStore( outDiagonal, position, vec4( topleft[invocation], bottomright[invocation], 0.0, 0.0 ) );
+}

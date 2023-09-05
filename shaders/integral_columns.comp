@@ -1,0 +1,47 @@
+#version 450
+
+layout( local_size_x = 1024 ) in;
+layout( binding = 1, r32f ) uniform restrict readonly image2D inDensity;
+layout( binding = 2, rg32f ) uniform restrict writeonly image2D outColumns;
+
+shared float up[1024];
+shared float down[1024];
+
+void gather( int invocation, int stride ) {
+	float upnext = up[invocation];
+	int index = invocation - stride;
+	if( index >= 0 ) upnext += up[index];
+
+	float downnext = down[invocation];
+	index = invocation + stride;
+	if( index < 1024 ) downnext += down[index];
+
+	barrier();
+	
+	up[invocation] = upnext;
+	down[invocation] = downnext;
+
+	barrier();
+}
+
+void main()
+{
+	int group = int( gl_WorkGroupID.x );
+	int invocation = int( gl_LocalInvocationID.x );
+
+	up[invocation] = down[invocation] = imageLoad( inDensity, ivec2( group, invocation ) ).x;
+	barrier();
+
+	gather( invocation, 1 );
+	gather( invocation, 2 );
+	gather( invocation, 4 );
+	gather( invocation, 8 );
+	gather( invocation, 16 );
+	gather( invocation, 32 );
+	gather( invocation, 64 );
+	gather( invocation, 128 );
+	gather( invocation, 256 );
+	gather( invocation, 512 );
+
+	imageStore( outColumns, ivec2( group, invocation ), vec4( up[invocation], down[invocation], 0.0, 0.0 ) );
+}
